@@ -1,0 +1,6 @@
+numpy
+openpyxl
+pandas
+pywin32; platform_system == "Windows"
+streamlit
+plotly==7.1.0

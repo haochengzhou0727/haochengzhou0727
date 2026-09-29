@@ -294,6 +294,14 @@ def _stats(values: pd.Series, current: float) -> dict[str, float]:
     return {"Current": current, "Average": mean, "StDev": std, "Z-Score": z, "Percentile": float((values <= current).mean()) if len(values) else np.nan, "Low": float(values.min()) if len(values) else np.nan, "High": float(values.max()) if len(values) else np.nan, "N": float(len(values))}
 
 
+def _relative_history(model: PythonModel, currency: str, structure: str, peers: list[str], history_index: pd.DatetimeIndex) -> pd.Series:
+    own = model.final[currency].set_index("Date")[structure].reindex(history_index)
+    peer_series = [model.final[peer].set_index("Date")[structure].reindex(history_index) for peer in peers if peer in model.final and structure in model.final[peer].columns]
+    if not peer_series:
+        return pd.Series(index=history_index, dtype=float)
+    return own - pd.concat(peer_series, axis=1).mean(axis=1)
+
+
 def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -> pd.DataFrame:
     final = model.final[currency]
     end = final["Date"].max()
@@ -308,8 +316,34 @@ def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -
         current = float(level.iloc[-1]) if len(level) else np.nan
         cr = pd.to_numeric(history.get(f"{name} C&R", pd.Series(dtype=float)), errors="coerce").dropna()
         cr_current = float(cr.iloc[-1]) if len(cr) else np.nan
+        cr_stats = _stats(cr, cr_current)
         vol = float(level.diff().std()) if len(level) > 1 else np.nan
-        row = {"Structure": name, **_stats(level, current), "Carry (bp)": np.nan, "Roll (bp)": np.nan, "C&R (bp)": cr_current, "C&R Z-Score": _stats(cr, cr_current)["Z-Score"], "Daily Vol": vol}
+        history_dates = pd.DatetimeIndex(history["Date"])
+        usd_history = _relative_history(model, currency, name, ["USD"], history_dates)
+        basket_peers = [peer for peer in controls.basket if peer != currency]
+        basket_history = _relative_history(model, currency, name, basket_peers, history_dates)
+        usd_stats = _stats(usd_history, float(usd_history.dropna().iloc[-1])) if usd_history.notna().any() else {}
+        basket_stats = _stats(basket_history, float(basket_history.dropna().iloc[-1])) if basket_history.notna().any() else {}
+        row = {
+            "Structure": name,
+            **_stats(level, current),
+            "Carry (bp)": np.nan,
+            "Roll (bp)": np.nan,
+            "C&R (bp)": cr_current,
+            "C&R Average": cr_stats["Average"],
+            "C&R StDev": cr_stats["StDev"],
+            "C&R Z-Score": cr_stats["Z-Score"],
+            "C&R Percentile": cr_stats["Percentile"],
+            "C&R Low": cr_stats["Low"],
+            "C&R High": cr_stats["High"],
+            "Daily Vol": vol,
+            "USD Level": usd_stats.get("Current", np.nan),
+            "USD Z": usd_stats.get("Z-Score", np.nan),
+            "USD %ile": usd_stats.get("Percentile", np.nan),
+            "Basket Level": basket_stats.get("Current", np.nan),
+            "Basket Z": basket_stats.get("Z-Score", np.nan),
+            "Basket %ile": basket_stats.get("Percentile", np.nan),
+        }
         for suffix in (" Carry", " Roll"):
             series = pd.to_numeric(history.get(name + suffix, pd.Series(dtype=float)), errors="coerce").dropna()
             row[f"{suffix.strip()} (bp)"] = float(series.iloc[-1]) if len(series) else np.nan
@@ -325,7 +359,8 @@ def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -
 
 def build_cross_analysis(model: PythonModel, controls: ModelControls) -> pd.DataFrame:
     rows = []
-    currencies = list(model.analysis)
+    # USD is a benchmark adjustment, not a tradable leg in current rankings.
+    currencies = [currency for currency in model.analysis if currency != "USD"]
     structures = list(controls.spreads) + list(controls.flies)
     for left_index, left in enumerate(currencies):
         for right in currencies[left_index + 1:]:
@@ -343,12 +378,34 @@ def build_cross_analysis(model: PythonModel, controls: ModelControls) -> pd.Data
                     if left_structure in usd_frame.index and right_structure in usd_frame.index:
                         usd_z = float(usd_frame.loc[left_structure, "Z-Score"] - usd_frame.loc[right_structure, "Z-Score"])
                     usd_adjustment = controls.weight_usd * usd_z if controls.use_usd_benchmark else 0.0
-                    basket_adjustment = 0.0 if left in controls.basket and right in controls.basket else -controls.weight_basket * z
+                    basket_z_left = l.get("Basket Z", np.nan)
+                    basket_z_right = r.get("Basket Z", np.nan)
+                    basket_z_difference = basket_z_left - basket_z_right if pd.notna(basket_z_left) and pd.notna(basket_z_right) else np.nan
+                    basket_adjustment = controls.weight_basket * basket_z_difference
+                    percentile = l["Percentile"] - r["Percentile"]
+                    usd_level = l.get("USD Level", np.nan) - r.get("USD Level", np.nan)
+                    usd_percentile = l.get("USD %ile", np.nan) - r.get("USD %ile", np.nan)
+                    basket_level = l.get("Basket Level", np.nan) - r.get("Basket Level", np.nan)
+                    basket_percentile = l.get("Basket %ile", np.nan) - r.get("Basket %ile", np.nan)
                     composite = controls.weight_levels * z + usd_adjustment + basket_adjustment + controls.weight_carry_vol * carry_vol
-                    rows.append({"Trade": f"{left} {left_structure} vs {right} {right_structure}", "Direction": f"Receive {left} / Pay {right}", "Ccy 1": left, "Leg 1": left_structure, "Ccy 2": right, "Leg 2": right_structure, "Z-Score": z, "C&R/Vol": carry_vol, "USD RV": usd_adjustment, "Basket RV": basket_adjustment, "COMPOSITE": composite})
+                    rows.append({
+                        "Trade": f"{left} {left_structure} vs {right} {right_structure}",
+                        "Direction": f"Receive {left} / Pay {right}",
+                        "Ccy 1": left, "Leg 1": left_structure, "Ccy 2": right, "Leg 2": right_structure,
+                        "Level RV": l["Current"] - r["Current"], "Z-Score": z, "Percentile": percentile,
+                        "Carry (bp)": l["Carry (bp)"] - r["Carry (bp)"], "Roll (bp)": l["Roll (bp)"] - r["Roll (bp)"],
+                        "C&R (bp)": l["C&R (bp)"] - r["C&R (bp)"], "C&R/Vol": carry_vol,
+                        "USD Level": usd_level, "USD Z": usd_z, "USD %ile": usd_percentile,
+                        "Basket Level": basket_level, "Basket Z": basket_z_difference, "Basket %ile": basket_percentile,
+                        "USD RV": usd_adjustment, "Basket RV": basket_adjustment, "COMPOSITE": composite,
+                    })
     if not rows:
-        return pd.DataFrame(columns=["Trade", "Direction", "Ccy 1", "Leg 1", "Ccy 2", "Leg 2", "Z-Score", "C&R/Vol", "COMPOSITE"])
-    return pd.DataFrame(rows).sort_values("COMPOSITE", ascending=False).head(controls.top_n_composite).reset_index(drop=True)
+        return pd.DataFrame(columns=[
+            "Trade", "Direction", "Ccy 1", "Leg 1", "Ccy 2", "Leg 2", "Level RV", "Z-Score", "Percentile",
+            "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R/Vol", "USD Level", "USD Z", "USD %ile",
+            "Basket Level", "Basket Z", "Basket %ile", "USD RV", "Basket RV", "COMPOSITE",
+        ])
+    return pd.DataFrame(rows).sort_values("COMPOSITE", ascending=False).reset_index(drop=True)
 
 
 def build_model(path: str | Path = DEFAULT_WORKBOOK, controls: ModelControls = ModelControls()) -> PythonModel:
@@ -397,6 +454,7 @@ def build_model(path: str | Path = DEFAULT_WORKBOOK, controls: ModelControls = M
         model.carry[currency] = pd.DataFrame(carry_rows)
         model.rolldown[currency] = pd.DataFrame(roll_rows)
         model.final[currency] = pd.DataFrame(final_rows)
+    for currency in model.raw:
         model.analysis[currency] = build_analysis(model, currency, controls)
     model.cross = build_cross_analysis(model, controls)
     return model

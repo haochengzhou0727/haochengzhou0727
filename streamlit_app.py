@@ -23,26 +23,80 @@ def calculate(path: str, modified_ns: int, controls: ModelControls, cache_versio
 
 def plot_history(frame: pd.DataFrame, value_columns: list[str], title: str) -> None:
     figure = go.Figure()
+    reference_columns = {"Mean", "+1 SD", "-1 SD", "+2 SD", "-2 SD"}
+    primary_columns = [column for column in value_columns if column not in reference_columns]
     for column in value_columns:
         reference_styles = {
-            "Mean": {"color": "#111827", "width": 2, "dash": "solid"},
+            "Mean": {"color": "#111827", "width": 2.25, "dash": "solid"},
             "+1 SD": {"color": "#2563eb", "width": 1.5, "dash": "dash"},
             "-1 SD": {"color": "#2563eb", "width": 1.5, "dash": "dash"},
-            "+2 SD": {"color": "#f59e0b", "width": 1.5, "dash": "dot"},
-            "-2 SD": {"color": "#f59e0b", "width": 1.5, "dash": "dot"},
+            "+2 SD": {"color": "#d97706", "width": 1.5, "dash": "dot"},
+            "-2 SD": {"color": "#d97706", "width": 1.5, "dash": "dot"},
         }
         line = reference_styles.get(column)
-        if column == "Strategy level":
-            line = {"color": "#dc2626", "width": 2.5, "dash": "solid"}
-        figure.add_trace(go.Scatter(x=frame.index, y=frame[column], mode="lines", name=column, line=line))
+        if column in primary_columns and any(term in column.lower() for term in ("c&r", "carry", "roll")):
+            line = {"color": "#15803d", "width": 3, "dash": "solid"}
+        elif column in primary_columns:
+            line = {"color": "#1e3a8a", "width": 3, "dash": "solid"}
+        figure.add_trace(
+            go.Scatter(
+                x=frame.index,
+                y=frame[column],
+                mode="lines",
+                name=column,
+                line=line,
+                hovertemplate="%{y:.2f}<extra>%{fullData.name}</extra>",
+            )
+        )
+    if len(primary_columns) == 1 and not reference_columns.intersection(value_columns):
+        series = pd.to_numeric(frame[primary_columns[0]], errors="coerce").dropna()
+        if len(series) > 1:
+            mean = float(series.mean())
+            stdev = float(series.std())
+            for label, value, color, dash in (
+                ("Mean", mean, "#111827", "solid"),
+                ("+1 SD", mean + stdev, "#2563eb", "dash"),
+                ("-1 SD", mean - stdev, "#2563eb", "dash"),
+                ("+2 SD", mean + 2 * stdev, "#d97706", "dot"),
+                ("-2 SD", mean - 2 * stdev, "#d97706", "dot"),
+            ):
+                figure.add_trace(
+                    go.Scatter(
+                        x=frame.index,
+                        y=[value] * len(frame.index),
+                        mode="lines",
+                        name=label,
+                        line={"color": color, "width": 2 if label == "Mean" else 1.5, "dash": dash},
+                        hoverinfo="skip",
+                        showlegend=True,
+                    )
+                )
     figure.update_layout(
-        title=title,
-        height=560,
+        template="plotly_white",
+        title={"text": title, "x": 0, "xanchor": "left", "font": {"size": 18, "color": "#172033"}},
+        height=500,
         hovermode="x unified",
-        margin={"l": 20, "r": 20, "t": 55, "b": 20},
-        xaxis={"title": "Date", "rangeslider": {"visible": True}, "type": "date"},
-        yaxis={"title": "Value"},
-        legend={"orientation": "h", "y": 1.02, "x": 0},
+        hoverlabel={"bgcolor": "#172033", "font": {"color": "white"}},
+        margin={"l": 24, "r": 24, "t": 64, "b": 24},
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#f8fafc",
+        xaxis={
+            "title": None,
+            "rangeslider": {"visible": True, "thickness": 0.08},
+            "type": "date",
+            "showgrid": False,
+            "linecolor": "#cbd5e1",
+            "tickfont": {"color": "#64748b"},
+        },
+        yaxis={
+            "title": None,
+            "showgrid": True,
+            "gridcolor": "#e2e8f0",
+            "zeroline": True,
+            "zerolinecolor": "#94a3b8",
+            "tickfont": {"color": "#64748b"},
+        },
+        legend={"orientation": "h", "y": 1.02, "x": 0, "font": {"color": "#334155"}},
     )
     st.plotly_chart(figure, use_container_width=True, config={"scrollZoom": True, "displaylogo": False})
 
@@ -216,9 +270,11 @@ if view == "Top composite":
                 axis=1,
                 join="inner",
             ).dropna(how="all")
+            history["Carry and Roll (bp)"] = history["Carry (bp)"] + history["Roll (bp)"]
             st.subheader(f"{selected_trade['Direction']}: {selected_trade['Trade']}")
             st.dataframe(history.reset_index(), use_container_width=True, hide_index=True)
-            plot_history(history, ["Level RV", "C&R (bp)"], "Cross-currency trade history")
+            plot_history(history, ["Level RV"], "Cross-currency historical level")
+            plot_history(history, ["Carry and Roll (bp)"], "Cross-currency historical carry and roll")
         else:
             st.info("The selected cross-currency trade is no longer available.")
 

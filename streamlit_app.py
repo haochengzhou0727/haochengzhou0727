@@ -11,7 +11,7 @@ from carry_dashboard import DEFAULT_BASKET, DEFAULT_FLIES, DEFAULT_LEVELS, DEFAU
 
 st.set_page_config(page_title="Carry & Rolldown Python Model", page_icon="C", layout="wide")
 
-CACHE_VERSION = "cross-ranking-v3"
+CACHE_VERSION = "cross-ranking-v7-lookback-cr-volatility"
 
 
 @st.cache_data(show_spinner="Calculating curves, carry, rolldown, and scores in Python...")
@@ -138,7 +138,7 @@ if view == "Top composite":
 
     ranking_columns = [
         "Trade", "Direction", "Ccy 1", "Leg 1", "Ccy 2", "Leg 2", "Level RV", "Z-Score", "Percentile",
-        "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R/Vol", "USD Level", "USD Z", "USD %ile",
+        "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R Vol (bp)", "C&R/Vol", "USD Level", "USD Z", "USD %ile",
         "Basket Level", "Basket Z", "Basket %ile", "USD RV", "Basket RV", "COMPOSITE",
     ]
     available_columns = [column for column in ranking_columns if column in ranking_data.columns]
@@ -198,7 +198,7 @@ if view == "Top composite":
     ranking_table(f"Bottom {int(top_z)} cross-currency Z-score", ranked_rows("Z-Score", int(top_z), ascending=True)[available_columns])
     ranking_table(f"Top {int(top_percentile)} cross-currency percentile", ranked_rows("Percentile", int(top_percentile))[available_columns])
     ranking_table(f"Bottom {int(top_percentile)} cross-currency percentile", ranked_rows("Percentile", int(top_percentile), ascending=True)[available_columns])
-    ranking_table(f"Top {int(top_carry_vol)} cross-currency C&R / daily volatility", ranked_rows("C&R/Vol", int(top_carry_vol))[available_columns])
+    ranking_table(f"Top {int(top_carry_vol)} cross-currency C&R / C&R volatility", ranked_rows("C&R/Vol", int(top_carry_vol))[available_columns])
 elif view == "Analysis":
     st.subheader(f"{currency} Python analysis")
     analysis = model.analysis[currency]
@@ -301,7 +301,7 @@ elif view == "Strategy builder":
         leg_rows.append({"Action": action, "Weight": weight, "Currency": leg_currency, "Structure": structure, "Sign": sign, "Analysis": row})
 
     if leg_rows:
-        metric_names = ["Current", "Average", "StDev", "Z-Score", "Percentile", "Low", "High", "Daily Vol", "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R Z-Score", "C&R/Vol", "COMPOSITE"]
+        metric_names = ["Current", "Average", "StDev", "Z-Score", "Percentile", "Low", "High", "Daily Vol", "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R Z-Score", "C&R/Vol", "USD RV", "Basket RV", "COMPOSITE"]
         strategy_values = {}
         usd_values = {}
         basket_values = {}

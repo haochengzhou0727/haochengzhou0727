@@ -11,10 +11,13 @@ from carry_dashboard import DEFAULT_BASKET, DEFAULT_FLIES, DEFAULT_LEVELS, DEFAU
 
 st.set_page_config(page_title="Carry & Rolldown Python Model", page_icon="C", layout="wide")
 
+CACHE_VERSION = "cross-ranking-v2"
+
 
 @st.cache_data(show_spinner="Calculating curves, carry, rolldown, and scores in Python...")
-def calculate(path: str, modified_ns: int, controls: ModelControls) -> PythonModel:
+def calculate(path: str, modified_ns: int, controls: ModelControls, cache_version: str) -> PythonModel:
     del modified_ns
+    del cache_version
     return build_model(path, controls)
 
 
@@ -104,7 +107,7 @@ if st.sidebar.button("Recalculate in Python", type="primary", use_container_widt
     calculate.clear()
     st.rerun()
 
-model = calculate(str(workbook_path), workbook_path.stat().st_mtime_ns, controls)
+model = calculate(str(workbook_path), workbook_path.stat().st_mtime_ns, controls, CACHE_VERSION)
 currencies = list(model.raw)
 views = ["Top composite", "Analysis", "Watchlist", "Strategy builder", "Tenor explorer", "Charts", "Carry", "Rolldown", "Final", "Cleaned raw"]
 as_of_dates = [frame["Date"].max() for frame in model.raw.values() if not frame.empty]
@@ -114,57 +117,88 @@ st.caption("Excel supplies raw rates. All downstream calculations run in Python.
 st.caption(f"As of: {as_of:%d %b %Y}" if as_of is not None else "As of: unavailable")
 query_currency = query_value("currency")
 query_view = query_value("view")
+query_trade = query_value("trade")
 currency = st.sidebar.selectbox("Currency", currencies, index=currencies.index(query_currency) if query_currency in currencies else 0)
 view = st.sidebar.selectbox("Python output", views, index=views.index(query_view) if query_view in views else 0)
 
 if view == "Top composite":
-    st.subheader("Top composite cross-currency trades")
-    composite_table = model.cross.copy()
-    composite_table["Open history"] = [
-        f"?view=Top+composite&trade={index}"
-        for index in composite_table.index
+    st.subheader("Cross-currency composite rankings")
+    ranking_data = model.cross.copy()
+
+    def ranking_table(title: str, ranked: pd.DataFrame) -> None:
+        display = ranked.copy()
+        display["Open history"] = [f"?view=Top+composite&trade={index}" for index in display.index]
+        st.subheader(title)
+        st.dataframe(
+            display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"Open history": st.column_config.LinkColumn("Open history", display_text="Open history")},
+        )
+
+    ranking_columns = [
+        "Trade", "Direction", "Ccy 1", "Leg 1", "Ccy 2", "Leg 2", "Level RV", "Z-Score", "Percentile",
+        "Carry (bp)", "Roll (bp)", "C&R (bp)", "C&R/Vol", "USD Level", "USD Z", "USD %ile",
+        "Basket Level", "Basket Z", "Basket %ile", "USD RV", "Basket RV", "COMPOSITE",
     ]
-    st.dataframe(
-        composite_table,
-        use_container_width=True,
-        hide_index=True,
-        column_config={"Open history": st.column_config.LinkColumn("Open history", display_text="Open history")},
-    )
-    if not model.cross.empty:
-        query_trade = query_value("trade")
-        if query_trade and query_trade.isdigit() and int(query_trade) in model.cross.index:
+    available_columns = [column for column in ranking_columns if column in ranking_data.columns]
+    for column in ("Z-Score", "Percentile", "C&R/Vol", "COMPOSITE"):
+        if column in ranking_data.columns:
+            ranking_data[column] = pd.to_numeric(ranking_data[column], errors="coerce")
+    required_ranking_columns = ["Z-Score", "Percentile", "C&R/Vol", "COMPOSITE"]
+    missing_ranking_columns = [column for column in required_ranking_columns if column not in ranking_data.columns]
+    if missing_ranking_columns:
+        for column in missing_ranking_columns:
+            ranking_data[column] = pd.NA
+
+    if query_trade is not None:
+        try:
             trade_index = int(query_trade)
-            trade = model.cross.loc[trade_index]
+        except ValueError:
+            trade_index = -1
+        if 0 <= trade_index < len(model.cross):
+            selected_trade = model.cross.iloc[trade_index]
+            left_history = model.final[selected_trade["Ccy 1"]].set_index("Date")
+            right_history = model.final[selected_trade["Ccy 2"]].set_index("Date")
+            left_leg = selected_trade["Leg 1"]
+            right_leg = selected_trade["Leg 2"]
+            history = pd.concat(
+                {
+                    "Level RV": left_history[left_leg] - right_history[right_leg],
+                    "Carry (bp)": left_history[f"{left_leg} Carry"] - right_history[f"{right_leg} Carry"],
+                    "Roll (bp)": left_history[f"{left_leg} Roll"] - right_history[f"{right_leg} Roll"],
+                    "C&R (bp)": left_history[f"{left_leg} C&R"] - right_history[f"{right_leg} C&R"],
+                },
+                axis=1,
+                join="inner",
+            ).dropna(how="all")
+            st.subheader(f"{selected_trade['Direction']}: {selected_trade['Trade']}")
+            st.dataframe(history.reset_index(), use_container_width=True, hide_index=True)
+            plot_history(history, ["Level RV", "C&R (bp)"], "Cross-currency trade history")
         else:
-            trade = None
-        if trade is not None:
-            left_currency, right_currency = trade["Ccy 1"], trade["Ccy 2"]
-            left_structure, right_structure = trade["Leg 1"], trade["Leg 2"]
-            left_history = model.final[left_currency].set_index("Date")
-            right_history = model.final[right_currency].set_index("Date")
-            strategy_history = pd.DataFrame(index=left_history.index.union(right_history.index).sort_values())
-            strategy_history[f"{left_currency} {left_structure}"] = left_history[left_structure]
-            strategy_history[f"{right_currency} {right_structure}"] = right_history[right_structure]
-            strategy_history["Strategy level"] = strategy_history.iloc[:, 0] - strategy_history.iloc[:, 1]
-            left_cr = f"{left_structure} C&R"
-            right_cr = f"{right_structure} C&R"
-            if left_cr in left_history.columns and right_cr in right_history.columns:
-                strategy_history["Strategy C&R"] = left_history[left_cr] - right_history[right_cr]
-            st.subheader("Selected composite history")
-            st.dataframe(strategy_history.reset_index(), use_container_width=True, hide_index=True)
-            strategy_level = pd.to_numeric(strategy_history["Strategy level"], errors="coerce")
-            strategy_level_stats = strategy_history[["Strategy level"]].copy()
-            mean = float(strategy_level.mean())
-            stdev = float(strategy_level.std())
-            for label, value in (("Mean", mean), ("+1 SD", mean + stdev), ("-1 SD", mean - stdev), ("+2 SD", mean + 2 * stdev), ("-2 SD", mean - 2 * stdev)):
-                strategy_level_stats[label] = value
-            plot_history(strategy_level_stats, ["Strategy level", "Mean", "+1 SD", "-1 SD", "+2 SD", "-2 SD"], "Selected composite historical strategy level")
-            if "Strategy C&R" in strategy_history:
-                plot_history(strategy_history, ["Strategy C&R"], "Selected composite historical C&R")
-        else:
-            st.info("Click a trade name in the table to open its history.")
-    st.subheader(f"Top {top_n} {currency} structures")
-    st.dataframe(model.analysis[currency].head(int(top_n)), use_container_width=True, hide_index=True)
+            st.info("The selected cross-currency trade is no longer available.")
+
+    def ranked_rows(metric: str, count: int, ascending: bool = False) -> pd.DataFrame:
+        valid = ranking_data.dropna(subset=[metric])
+        if valid.empty:
+            return valid
+        return valid.nsmallest(count, metric) if ascending else valid.nlargest(count, metric)
+
+    composite_rows = ranked_rows("COMPOSITE", int(top_n))
+    if composite_rows.empty:
+        st.info("No cross-currency composite scores are available for the selected structures and lookback.")
+    else:
+        ranking_table(
+            f"Top {int(top_n)} cross-currency composite score",
+            composite_rows[available_columns],
+        )
+
+    positive_z = ranking_data[ranking_data["Z-Score"] > 0].dropna(subset=["Z-Score"])
+    ranking_table(f"Top {int(top_z)} positive cross-currency Z-score", positive_z.nlargest(int(top_z), "Z-Score")[available_columns])
+    ranking_table(f"Bottom {int(top_z)} cross-currency Z-score", ranked_rows("Z-Score", int(top_z), ascending=True)[available_columns])
+    ranking_table(f"Top {int(top_percentile)} cross-currency percentile", ranked_rows("Percentile", int(top_percentile))[available_columns])
+    ranking_table(f"Bottom {int(top_percentile)} cross-currency percentile", ranked_rows("Percentile", int(top_percentile), ascending=True)[available_columns])
+    ranking_table(f"Top {int(top_carry_vol)} cross-currency C&R / daily volatility", ranked_rows("C&R/Vol", int(top_carry_vol))[available_columns])
 elif view == "Analysis":
     st.subheader(f"{currency} Python analysis")
     analysis = model.analysis[currency]

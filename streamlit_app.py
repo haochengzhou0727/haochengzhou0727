@@ -54,6 +54,29 @@ def query_value(name: str) -> str | None:
     return str(value) if value is not None else None
 
 
+def query_int(name: str, default: int) -> int:
+    value = query_value(name)
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
+
+
+def query_float(name: str, default: float) -> float:
+    value = query_value(name)
+    try:
+        return float(value) if value is not None else default
+    except ValueError:
+        return default
+
+
+def query_bool(name: str, default: bool) -> bool:
+    value = query_value(name)
+    if value is None:
+        return default
+    return value.lower() in ("1", "true", "yes", "on")
+
+
 workbook_path = Path(st.sidebar.text_input("Raw-data workbook", str(DEFAULT_WORKBOOK)))
 if not workbook_path.exists():
     st.error(f"Workbook not found: {workbook_path}")
@@ -61,24 +84,24 @@ if not workbook_path.exists():
 
 st.sidebar.subheader("Python model controls")
 with st.sidebar.expander("Structures and basket", expanded=True):
-    basket_text = st.text_input("Basket currencies", ", ".join(DEFAULT_BASKET), help="Comma-separated currencies used for basket RV.")
-    levels_text = st.text_input("Levels", ", ".join(DEFAULT_LEVELS), help="Comma-separated tenors, for example 1M, 6M, 1Y, 2Y.")
-    spreads_text = st.text_input("Spreads", ", ".join(DEFAULT_SPREADS), help="Comma-separated structures, for example 1s2s, 2s5s.")
-    flies_text = st.text_input("Flies", ", ".join(DEFAULT_FLIES), help="Comma-separated structures, for example 1s2s5s.")
+    basket_text = st.text_input("Basket currencies", query_value("basket") or ", ".join(DEFAULT_BASKET), help="Comma-separated currencies used for basket RV.")
+    levels_text = st.text_input("Levels", query_value("levels") or ", ".join(DEFAULT_LEVELS), help="Comma-separated tenors, for example 1M, 6M, 1Y, 2Y.")
+    spreads_text = st.text_input("Spreads", query_value("spreads") or ", ".join(DEFAULT_SPREADS), help="Comma-separated structures, for example 1s2s, 2s5s.")
+    flies_text = st.text_input("Flies", query_value("flies") or ", ".join(DEFAULT_FLIES), help="Comma-separated structures, for example 1s2s5s.")
 with st.sidebar.expander("Lookback and ranking", expanded=True):
-    lookback = st.number_input("Lookback (months)", min_value=1, max_value=120, value=6)
-    horizon = st.number_input("Carry horizon (months)", min_value=1, max_value=24, value=3)
-    min_tenor = st.number_input("Minimum cross-trade tenor (months)", min_value=1, max_value=120, value=12)
-    top_z = st.number_input("Top / bottom z-score", min_value=1, max_value=50, value=3)
-    top_percentile = st.number_input("Top / bottom percentile", min_value=1, max_value=50, value=3)
-    top_carry_vol = st.number_input("Top C&R / volatility", min_value=1, max_value=50, value=3)
-    top_n = st.number_input("Top composite trades", min_value=1, max_value=50, value=5)
+    lookback = st.number_input("Lookback (months)", min_value=1, max_value=120, value=query_int("lookback", 6))
+    horizon = st.number_input("Carry horizon (months)", min_value=1, max_value=24, value=query_int("horizon", 3))
+    min_tenor = st.number_input("Minimum cross-trade tenor (months)", min_value=1, max_value=120, value=query_int("min_tenor", 12))
+    top_z = st.number_input("Top / bottom z-score", min_value=1, max_value=50, value=query_int("top_z", 3))
+    top_percentile = st.number_input("Top / bottom percentile", min_value=1, max_value=50, value=query_int("top_percentile", 3))
+    top_carry_vol = st.number_input("Top C&R / volatility", min_value=1, max_value=50, value=query_int("top_carry_vol", 3))
+    top_n = st.number_input("Top composite trades", min_value=1, max_value=50, value=query_int("top_n", 5))
 with st.sidebar.expander("Composite weights", expanded=True):
-    use_usd_benchmark = st.checkbox("Use USD as benchmark", value=True, help="Include USD relative-value adjustment in cross-currency composite scores. USD still has its own analysis.")
-    weight_levels = st.number_input("Weight: level RV", value=0.5, step=0.05)
-    weight_usd = st.number_input("Weight: USD RV", value=0.7, step=0.05)
-    weight_basket = st.number_input("Weight: basket RV", value=0.3, step=0.05)
-    weight_carry = st.number_input("Weight: carry and rolldown", value=0.15, step=0.05)
+    use_usd_benchmark = st.checkbox("Use USD as benchmark", value=query_bool("use_usd", True), help="Include USD relative-value adjustment in cross-currency composite scores. USD still has its own analysis.")
+    weight_levels = st.number_input("Weight: level RV", value=query_float("weight_levels", 0.5), step=0.05)
+    weight_usd = st.number_input("Weight: USD RV", value=query_float("weight_usd", 0.7), step=0.05)
+    weight_basket = st.number_input("Weight: basket RV", value=query_float("weight_basket", 0.3), step=0.05)
+    weight_carry = st.number_input("Weight: carry and rolldown", value=query_float("weight_carry", 0.15), step=0.05)
 
 def parse_list(value: str) -> tuple[str, ...]:
     return tuple(item.strip().upper() for item in value.split(",") if item.strip())
@@ -120,6 +143,27 @@ query_view = query_value("view")
 query_trade = query_value("trade")
 currency = st.sidebar.selectbox("Currency", currencies, index=currencies.index(query_currency) if query_currency in currencies else 0)
 view = st.sidebar.selectbox("Python output", views, index=views.index(query_view) if query_view in views else 0)
+
+st.query_params.update({
+    "view": view,
+    "currency": currency,
+    "basket": basket_text,
+    "levels": levels_text,
+    "spreads": spreads_text,
+    "flies": flies_text,
+    "lookback": int(lookback),
+    "horizon": int(horizon),
+    "min_tenor": int(min_tenor),
+    "top_z": int(top_z),
+    "top_percentile": int(top_percentile),
+    "top_carry_vol": int(top_carry_vol),
+    "top_n": int(top_n),
+    "use_usd": str(use_usd_benchmark).lower(),
+    "weight_levels": weight_levels,
+    "weight_usd": weight_usd,
+    "weight_basket": weight_basket,
+    "weight_carry": weight_carry,
+})
 
 if view == "Top composite":
     st.subheader("Cross-currency composite rankings")

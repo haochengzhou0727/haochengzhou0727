@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-DEFAULT_WORKBOOK = Path(__file__).with_name("Carry Rolldown Composite Score changed - Copy.xlsm")
+DEFAULT_WORKBOOK = Path(__file__).with_name("raw data.xlsx")
 TENOR_MONTHS = {"1M": 1, "3M": 3, "6M": 6, "9M": 9, "1Y": 12, "2Y": 24, "3Y": 36, "4Y": 48, "5Y": 60, "7Y": 84, "10Y": 120}
 DEFAULT_LEVELS = ["3M", "6M", "9M", "1Y", "2Y", "3Y", "4Y", "5Y", "7Y", "10Y"]
 DEFAULT_SPREADS = ["1s2s", "2s3s", "2s5s", "3s5s", "2s10s"]

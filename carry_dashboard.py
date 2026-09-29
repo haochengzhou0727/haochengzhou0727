@@ -305,7 +305,25 @@ def _relative_history(model: PythonModel, currency: str, structure: str, peers: 
 def _cross_history(model: PythonModel, left_currency: str, left_structure: str, right_currency: str, right_structure: str) -> pd.Series:
     left = model.final[left_currency].set_index("Date")[left_structure]
     right = model.final[right_currency].set_index("Date")[right_structure]
-    return pd.to_numeric(left, errors="coerce").subtract(pd.to_numeric(right, errors="coerce"), fill_value=np.nan).dropna()
+    return pd.concat(
+        {"Receive": pd.to_numeric(left, errors="coerce"), "Pay": pd.to_numeric(right, errors="coerce")},
+        axis=1,
+        join="inner",
+    ).dropna().assign(RV=lambda frame: frame["Receive"] - frame["Pay"])["RV"]
+
+
+def _cross_cr_history(model: PythonModel, left_currency: str, left_structure: str, right_currency: str, right_structure: str) -> pd.Series:
+    left = model.final[left_currency].set_index("Date")[f"{left_structure} C&R"]
+    right = model.final[right_currency].set_index("Date")[f"{right_structure} C&R"]
+    return pd.concat(
+        {"Receive": pd.to_numeric(left, errors="coerce"), "Pay": pd.to_numeric(right, errors="coerce")},
+        axis=1,
+        join="inner",
+    ).dropna().assign(CR=lambda frame: frame["Receive"] - frame["Pay"])["CR"]
+
+
+def _lookback_history(series: pd.Series, end: pd.Timestamp, lookback_months: int) -> pd.Series:
+    return series.loc[series.index >= end - pd.DateOffset(months=lookback_months)]
 
 
 def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -> pd.DataFrame:
@@ -323,7 +341,7 @@ def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -
         cr = pd.to_numeric(history.get(f"{name} C&R", pd.Series(dtype=float)), errors="coerce").dropna()
         cr_current = float(cr.iloc[-1]) if len(cr) else np.nan
         cr_stats = _stats(cr, cr_current)
-        vol = float(level.diff().std()) if len(level) > 1 else np.nan
+        cr_vol = cr_stats["StDev"]
         history_dates = pd.DatetimeIndex(history["Date"])
         usd_history = _relative_history(model, currency, name, ["USD"], history_dates)
         basket_peers = [peer for peer in controls.basket if peer != currency]
@@ -342,19 +360,32 @@ def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -
             "C&R Percentile": cr_stats["Percentile"],
             "C&R Low": cr_stats["Low"],
             "C&R High": cr_stats["High"],
-            "Daily Vol": vol,
+            "C&R Vol (bp)": cr_vol,
+            "Daily Vol": cr_vol,
+            "Annualized Vol (bp)": cr_vol,
             "USD Level": usd_stats.get("Current", np.nan),
             "USD Z": usd_stats.get("Z-Score", np.nan),
             "USD %ile": usd_stats.get("Percentile", np.nan),
+            "USD RV": usd_stats.get("Z-Score", np.nan),
             "Basket Level": basket_stats.get("Current", np.nan),
             "Basket Z": basket_stats.get("Z-Score", np.nan),
             "Basket %ile": basket_stats.get("Percentile", np.nan),
+            "Basket RV": basket_stats.get("Z-Score", np.nan),
         }
         for suffix in (" Carry", " Roll"):
             series = pd.to_numeric(history.get(name + suffix, pd.Series(dtype=float)), errors="coerce").dropna()
             row[f"{suffix.strip()} (bp)"] = float(series.iloc[-1]) if len(series) else np.nan
-        row["C&R/Vol"] = row["C&R (bp)"] / vol if vol and pd.notna(vol) else np.nan
-        row["COMPOSITE"] = controls.weight_levels * row["Z-Score"] + controls.weight_carry_vol * row["C&R/Vol"] if pd.notna(row["Z-Score"]) and pd.notna(row["C&R/Vol"]) else row["Z-Score"]
+        row["C&R/Vol"] = row["C&R (bp)"] / cr_vol if cr_vol and pd.notna(cr_vol) else np.nan
+        level_rv = row["Z-Score"]
+        usd_rv = row["USD RV"] if controls.use_usd_benchmark else 0.0
+        basket_rv = row["Basket RV"]
+        composite_terms = [
+            controls.weight_levels * level_rv,
+            controls.weight_usd * usd_rv,
+            controls.weight_basket * basket_rv,
+            controls.weight_carry_vol * row["C&R/Vol"],
+        ]
+        row["COMPOSITE"] = sum(composite_terms) if all(pd.notna(value) for value in composite_terms) else np.nan
         rows.append(row)
     result = pd.DataFrame(rows)
     category_order = {name: "Levels" for name in level_names} | {name: "Spreads" for name in spread_names} | {name: "Flies" for name in fly_names}
@@ -378,7 +409,17 @@ def build_cross_analysis(model: PythonModel, controls: ModelControls) -> pd.Data
                         continue
                     l, r = left_frame.loc[left_structure], right_frame.loc[right_structure]
                     z = l["Z-Score"] - r["Z-Score"]
-                    carry_vol = l["C&R/Vol"] - r["C&R/Vol"]
+                    cross_history = _cross_history(model, left, left_structure, right, right_structure)
+                    cross_cr_history = _cross_cr_history(model, left, left_structure, right, right_structure)
+                    cross_end = min(cross_history.index.max(), cross_cr_history.index.max())
+                    cross_history = _lookback_history(cross_history, cross_end, controls.lookback_months)
+                    cross_cr_history = _lookback_history(cross_cr_history, cross_end, controls.lookback_months)
+                    cross_vol = float(cross_cr_history.std()) if len(cross_cr_history) > 1 else np.nan
+                    carry_vol = (
+                        float(cross_cr_history.iloc[-1]) / cross_vol
+                        if len(cross_cr_history) and cross_vol and pd.notna(cross_vol)
+                        else np.nan
+                    )
                     usd_frame = model.analysis.get("USD", pd.DataFrame()).set_index("Structure")
                     usd_z = 0.0
                     if left_structure in usd_frame.index and right_structure in usd_frame.index:
@@ -388,7 +429,6 @@ def build_cross_analysis(model: PythonModel, controls: ModelControls) -> pd.Data
                     basket_z_right = r.get("Basket Z", np.nan)
                     basket_z_difference = basket_z_left - basket_z_right if pd.notna(basket_z_left) and pd.notna(basket_z_right) else np.nan
                     basket_adjustment = controls.weight_basket * basket_z_difference
-                    cross_history = _cross_history(model, left, left_structure, right, right_structure)
                     percentile = float((cross_history <= cross_history.iloc[-1]).mean()) if len(cross_history) else np.nan
                     usd_level = l.get("USD Level", np.nan) - r.get("USD Level", np.nan)
                     usd_percentile = l.get("USD %ile", np.nan) - r.get("USD %ile", np.nan)

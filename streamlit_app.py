@@ -10,8 +10,6 @@ import streamlit as st
 from carry_dashboard import DEFAULT_BASKET, DEFAULT_FLIES, DEFAULT_LEVELS, DEFAULT_SPREADS, DEFAULT_WORKBOOK, ModelControls, PythonModel, build_model
 
 st.set_page_config(page_title="Carry & Rolldown Python Model", page_icon="C", layout="wide")
-st.title("Carry & Rolldown")
-st.caption("Excel supplies raw rates. All downstream calculations run in Python.")
 
 
 @st.cache_data(show_spinner="Calculating curves, carry, rolldown, and scores in Python...")
@@ -109,6 +107,11 @@ if st.sidebar.button("Recalculate in Python", type="primary", use_container_widt
 model = calculate(str(workbook_path), workbook_path.stat().st_mtime_ns, controls)
 currencies = list(model.raw)
 views = ["Top composite", "Analysis", "Watchlist", "Strategy builder", "Tenor explorer", "Charts", "Carry", "Rolldown", "Final", "Cleaned raw"]
+as_of_dates = [frame["Date"].max() for frame in model.raw.values() if not frame.empty]
+as_of = max(as_of_dates) if as_of_dates else None
+st.title("Carry & Rolldown")
+st.caption("Excel supplies raw rates. All downstream calculations run in Python.")
+st.caption(f"As of: {as_of:%d %b %Y}" if as_of is not None else "As of: unavailable")
 query_currency = query_value("currency")
 query_view = query_value("view")
 currency = st.sidebar.selectbox("Currency", currencies, index=currencies.index(query_currency) if query_currency in currencies else 0)

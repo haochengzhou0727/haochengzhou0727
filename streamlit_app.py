@@ -11,7 +11,7 @@ from carry_dashboard import DEFAULT_BASKET, DEFAULT_FLIES, DEFAULT_LEVELS, DEFAU
 
 st.set_page_config(page_title="Carry & Rolldown Python Model", page_icon="C", layout="wide")
 
-CACHE_VERSION = "cross-ranking-v2"
+CACHE_VERSION = "cross-ranking-v3"
 
 
 @st.cache_data(show_spinner="Calculating curves, carry, rolldown, and scores in Python...")

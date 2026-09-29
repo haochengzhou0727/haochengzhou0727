@@ -302,6 +302,12 @@ def _relative_history(model: PythonModel, currency: str, structure: str, peers: 
     return own - pd.concat(peer_series, axis=1).mean(axis=1)
 
 
+def _cross_history(model: PythonModel, left_currency: str, left_structure: str, right_currency: str, right_structure: str) -> pd.Series:
+    left = model.final[left_currency].set_index("Date")[left_structure]
+    right = model.final[right_currency].set_index("Date")[right_structure]
+    return pd.to_numeric(left, errors="coerce").subtract(pd.to_numeric(right, errors="coerce"), fill_value=np.nan).dropna()
+
+
 def build_analysis(model: PythonModel, currency: str, controls: ModelControls) -> pd.DataFrame:
     final = model.final[currency]
     end = final["Date"].max()
@@ -382,7 +388,8 @@ def build_cross_analysis(model: PythonModel, controls: ModelControls) -> pd.Data
                     basket_z_right = r.get("Basket Z", np.nan)
                     basket_z_difference = basket_z_left - basket_z_right if pd.notna(basket_z_left) and pd.notna(basket_z_right) else np.nan
                     basket_adjustment = controls.weight_basket * basket_z_difference
-                    percentile = l["Percentile"] - r["Percentile"]
+                    cross_history = _cross_history(model, left, left_structure, right, right_structure)
+                    percentile = float((cross_history <= cross_history.iloc[-1]).mean()) if len(cross_history) else np.nan
                     usd_level = l.get("USD Level", np.nan) - r.get("USD Level", np.nan)
                     usd_percentile = l.get("USD %ile", np.nan) - r.get("USD %ile", np.nan)
                     basket_level = l.get("Basket Level", np.nan) - r.get("Basket Level", np.nan)

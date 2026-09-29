@@ -109,7 +109,7 @@ if st.sidebar.button("Recalculate in Python", type="primary", use_container_widt
 
 model = calculate(str(workbook_path), workbook_path.stat().st_mtime_ns, controls, CACHE_VERSION)
 currencies = list(model.raw)
-views = ["Top composite", "Analysis", "Watchlist", "Strategy builder", "Tenor explorer", "Charts", "Carry", "Rolldown", "Final", "Cleaned raw"]
+views = ["Top composite", "Analysis", "Watchlist", "Strategy builder", "Tenor explorer"]
 as_of_dates = [frame["Date"].max() for frame in model.raw.values() if not frame.empty]
 as_of = max(as_of_dates) if as_of_dates else None
 st.title("Carry & Rolldown")
@@ -241,7 +241,7 @@ elif view == "Watchlist":
     currency_columns = st.columns(max(1, min(5, len(currencies))))
     for index, item in enumerate(currencies):
         with currency_columns[index % len(currency_columns)]:
-            if st.checkbox(item, value=True, key=f"watchlist_currency_{item}"):
+            if st.checkbox(item, value=False, key=f"watchlist_currency_{item}"):
                 selected_currencies.append(item)
 
     selected_structures: list[str] = []
@@ -256,7 +256,7 @@ elif view == "Watchlist":
             structure_columns = st.columns(max(1, min(4, len(structures))))
             for index, structure in enumerate(structures):
                 with structure_columns[index % len(structure_columns)]:
-                    if st.checkbox(structure, value=True, key=f"watchlist_structure_{structure}"):
+                    if st.checkbox(structure, value=False, key=f"watchlist_structure_{structure}"):
                         selected_structures.append(structure)
 
     field_options = [column for column in model.analysis[currencies[0]].columns if column not in ("Group", "Structure")]
@@ -264,7 +264,7 @@ elif view == "Watchlist":
     field_columns = st.columns(4)
     for index, field in enumerate(field_options):
         with field_columns[index % len(field_columns)]:
-            if st.checkbox(field, value=True, key=f"watchlist_field_{field}"):
+            if st.checkbox(field, value=False, key=f"watchlist_field_{field}"):
                 selected_fields.append(field)
 
     if selected_currencies and selected_structures and selected_fields:
@@ -336,6 +336,29 @@ elif view == "Strategy builder":
         st.subheader("Strategy component diagnostics")
         st.dataframe(pd.DataFrame([strategy_values, usd_values, basket_values], index=["Strategy legs", "USD same legs", "Basket same legs"]), use_container_width=True)
         st.dataframe(pd.DataFrame([{key: value for key, value in leg.items() if key in ("Action", "Weight", "Currency", "Structure")} for leg in leg_rows]), use_container_width=True, hide_index=True)
+
+        strategy_history_frames = []
+        for leg in leg_rows:
+            leg_history = model.final[leg["Currency"]].set_index("Date")
+            structure = leg["Structure"]
+            strategy_history_frames.append(
+                pd.DataFrame(
+                    {
+                        f"{leg['Action']} {leg['Currency']} {structure} level": leg_history[structure] * leg["Weight"] * leg["Sign"],
+                        f"{leg['Action']} {leg['Currency']} {structure} carry": leg_history[f"{structure} Carry"] * leg["Weight"] * leg["Sign"],
+                        f"{leg['Action']} {leg['Currency']} {structure} roll": leg_history[f"{structure} Roll"] * leg["Weight"] * leg["Sign"],
+                    }
+                )
+            )
+        strategy_history = pd.concat(strategy_history_frames, axis=1).sort_index()
+        strategy_history["Strategy level"] = strategy_history.filter(regex=" level$").sum(axis=1)
+        strategy_history["Strategy carry"] = strategy_history.filter(regex=" carry$").sum(axis=1)
+        strategy_history["Strategy roll"] = strategy_history.filter(regex=" roll$").sum(axis=1)
+        strategy_history["Strategy C&R"] = strategy_history["Strategy carry"] + strategy_history["Strategy roll"]
+        st.subheader("Strategy history")
+        st.dataframe(strategy_history[["Strategy level", "Strategy carry", "Strategy roll"]].reset_index(), use_container_width=True, hide_index=True)
+        plot_history(strategy_history, ["Strategy level"], "Weighted strategy historical level")
+        plot_history(strategy_history, ["Strategy C&R"], "Weighted strategy historical carry and roll")
     else:
         st.info("Include at least one strategy leg.")
 elif view == "Tenor explorer":
@@ -371,36 +394,5 @@ elif view == "Tenor explorer":
                 cr_stats[label] = value
             st.dataframe(cr_stats.reset_index(), use_container_width=True, hide_index=True)
             plot_history(cr_stats, [cr_column, "Mean", "+1 SD", "-1 SD", "+2 SD", "-2 SD"], f"{currency} {selected_tenor} historical C&R")
-elif view == "Charts":
-    st.subheader(f"{currency} historical charts")
-    chart_frame = model.final[currency].set_index("Date")
-    available_structures = [column for column in chart_frame.columns if " Carry" not in column and " Roll" not in column and " C&R" not in column]
-    selected_chart_structures = st.multiselect("Structures", available_structures, default=available_structures[:3])
-    chart_tabs = st.tabs(["Historical levels", "Historical C&R"])
-    with chart_tabs[0]:
-        level_columns = [structure for structure in selected_chart_structures if structure in chart_frame.columns]
-        if level_columns:
-            plot_history(chart_frame, level_columns, f"{currency} historical levels")
-        else:
-            st.info("Select at least one structure.")
-    with chart_tabs[1]:
-        cr_columns = [f"{structure} C&R" for structure in selected_chart_structures if f"{structure} C&R" in chart_frame.columns]
-        if cr_columns:
-            plot_history(chart_frame, cr_columns, f"{currency} historical C&R")
-        else:
-            st.info("Selected structures do not have C&R history.")
-elif view == "Carry":
-    st.subheader(f"{currency} Python carry")
-    st.dataframe(model.carry[currency].tail(250), use_container_width=True, hide_index=True)
-elif view == "Rolldown":
-    st.subheader(f"{currency} Python rolldown")
-    st.dataframe(model.rolldown[currency].tail(250), use_container_width=True, hide_index=True)
-elif view == "Final":
-    st.subheader(f"{currency} Python final")
-    st.dataframe(model.final[currency].tail(250), use_container_width=True, hide_index=True)
-else:
-    st.subheader(f"{currency} cleaned raw rates")
-    st.dataframe(model.cleaned[currency].tail(250), use_container_width=True, hide_index=True)
-
 st.sidebar.divider()
 st.sidebar.caption(f"Python source: {workbook_path.name} | Excel outputs and VBA are not used")
